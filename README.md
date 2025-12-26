@@ -23,7 +23,7 @@ A lightweight network scanning utility that uses ICMP echo requests (ping) to ch
 Compile the program using GCC:
 
 ```bash
-gcc -o scan network_scanner_documented.c -Wall
+gcc -o ping ping.c -Wall
 ```
 
 ## Usage
@@ -31,7 +31,7 @@ gcc -o scan network_scanner_documented.c -Wall
 The program requires root privileges to create raw sockets:
 
 ```bash
-sudo ./scan [OPTIONS]
+sudo ./ping [OPTIONS]
 ```
 
 ### Command-Line Options
@@ -45,22 +45,22 @@ sudo ./scan [OPTIONS]
 
 Scan localhost on default port (8080):
 ```bash
-sudo ./scan
+sudo ./ping
 ```
 
 Scan a specific IP address:
 ```bash
-sudo ./scan -h 192.168.1.100
+sudo ./ping -h 192.168.1.100
 ```
 
 Scan a specific IP and port:
 ```bash
-sudo ./scan -h 192.168.1.100 -p 80
+sudo ./ping -h 192.168.1.100 -p 80
 ```
 
 Using long options:
 ```bash
-sudo ./scan --target_ip 192.168.1.100 --port 443
+sudo ./ping --target_ip 192.168.1.100 --port 443
 ```
 
 ## How It Works
@@ -155,7 +155,7 @@ If no suitable interface is found, the program returns an error.
 ### "This program requires root privileges to run"
 Run the program with `sudo`:
 ```bash
-sudo ./scan
+sudo ./ping
 ```
 
 ### "No TCP interface found"
@@ -212,8 +212,9 @@ This tool is provided for educational and network administration purposes only. 
 
 ## Author
 
-Network Scanner - ICMP Ping Implementation
+Sergio Randriamihoatra <sergiorandriamihoatra@gmail.com>
 
 ## Version
+1.0.0
 
 1.0.0
