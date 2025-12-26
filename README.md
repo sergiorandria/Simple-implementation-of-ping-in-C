@@ -215,6 +215,5 @@ This tool is provided for educational and network administration purposes only. 
 Sergio Randriamihoatra <sergiorandriamihoatra@gmail.com>
 
 ## Version
-1.0.0
 
 1.0.0
