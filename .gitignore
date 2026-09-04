@@ -2,7 +2,6 @@
 *.o
 *.d
 pong
-ping
 
 # sanitizer / coverage output
 *.gcda
