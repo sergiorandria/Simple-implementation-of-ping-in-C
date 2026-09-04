@@ -24,12 +24,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static void usage(const char *prog)
+static void usage(const char *prog, FILE *out)
 {
-    fprintf(stderr,
-        "Usage: %s [OPTIONS]\n"
+    fprintf(out,
+        "Usage: %s [OPTIONS] [target]\n"
         "  -h, --target_ip <host>    target: IP, hostname, IPv6 with %%scope,\n"
         "                            or an .onion / .i2p address          [localhost]\n"
+        "                            (also accepted as bare positional argument)\n"
         "  -p, --port <port>         target port for .onion/.i2p probes   [80]\n"
         "  -c, --count <n>           number of probes                     [30]\n"
         "  -t, --timeout <s>         per-probe timeout in seconds         [5]\n"
@@ -38,6 +39,7 @@ static void usage(const char *prog)
         "  -P, --proxy <host[:port]> SOCKS5 proxy for .onion/.i2p probes  [auto]\n"
         "  -4                        force IPv4 (ICMP only)\n"
         "  -6                        force IPv6 (ICMP only)\n"
+        "      --help                show this help and exit\n"
         "\n"
         "No root required: uses raw sockets when CAP_NET_RAW is present, otherwise\n"
         "falls back to unprivileged ICMP datagram sockets.\n"
@@ -73,6 +75,7 @@ int main(int argc, char **argv)
         {0, 0, 0, 0}
     };
 
+    opterr = 0;
     int c;
     while ((c = getopt_long(argc, argv, "h:p:c:t:i:fP:46", long_opts, NULL)) != -1) {
         int v;
@@ -103,12 +106,40 @@ int main(int argc, char **argv)
         case '4': cfg.family = AF_INET; break;
         case '6': cfg.family = AF_INET6; break;
         case 'H':
-            usage(argv[0]);
+            usage(argv[0], stdout);
             return EXIT_SUCCESS;
+        case '?':
         default:
-            usage(argv[0]);
+            if (optopt == 'h') {
+                /* Bare '-h' with no argument is treated as help request
+                 * (conventional ping expectation) rather than a hard error. */
+                usage(argv[0], stdout);
+                return EXIT_SUCCESS;
+            }
+            if (optopt)
+                fprintf(stderr, "unknown option or missing argument: -%c\n", optopt);
+            else
+                fprintf(stderr, "unknown option or missing argument\n");
+            usage(argv[0], stderr);
             return EXIT_FAILURE;
         }
+    }
+
+    /* Bare positional argument: ./pong [OPTIONS] <target>
+     * Mirrors conventional ping usage. */
+    if (optind < argc) {
+        if (cfg.host) {
+            fprintf(stderr, "target already set via -h/--target_ip; "
+                    "unexpected positional argument: %s\n", argv[optind]);
+            usage(argv[0], stderr);
+            return EXIT_FAILURE;
+        }
+        cfg.host = argv[optind++];
+    }
+    if (optind < argc) {
+        fprintf(stderr, "unexpected positional argument: %s\n", argv[optind]);
+        usage(argv[0], stderr);
+        return EXIT_FAILURE;
     }
 
     const char *host = cfg.host ? cfg.host : "localhost";
