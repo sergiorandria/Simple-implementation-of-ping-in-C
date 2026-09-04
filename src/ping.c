@@ -32,6 +32,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -404,6 +406,47 @@ int scan_address(int family, const struct sockaddr_storage *dst,
     return replies ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
+static bool get_active_interface(char *out, size_t out_len)
+{
+    FILE *f = fopen("/proc/net/route", "r");
+    if (f) {
+        char line[256];
+        /* skip header */
+        if (fgets(line, sizeof line, f)) {
+            while (fgets(line, sizeof line, f)) {
+                char iface[64] = {0};
+                char dest[64] = {0};
+                /* Iface Destination Gateway Flags */
+                if (sscanf(line, "%63s %63s %*s %*s %*s %*s %*s %*s", iface, dest) == 2) {
+                    if (strcmp(dest, "00000000") == 0) {
+                        snprintf(out, out_len, "%s", iface);
+                        fclose(f);
+                        return true;
+                    }
+                }
+            }
+        }
+        fclose(f);
+    }
+
+    struct ifaddrs *ifap = NULL;
+    if (getifaddrs(&ifap) == 0) {
+        for (struct ifaddrs *ifa = ifap; ifa; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_name) continue;
+            if (!(ifa->ifa_flags & IFF_UP)) continue;
+            if (ifa->ifa_flags & IFF_LOOPBACK) continue;
+            if (!(ifa->ifa_flags & IFF_RUNNING)) continue;
+            /* Prefer an interface that actually has an address */
+            if (!ifa->ifa_addr) continue;
+            snprintf(out, out_len, "%s", ifa->ifa_name);
+            freeifaddrs(ifap);
+            return true;
+        }
+        freeifaddrs(ifap);
+    }
+    return false;
+}
+
 int resolve_target(const ping_config *cfg, struct sockaddr_storage *out,
                    socklen_t *out_len)
 {
@@ -414,6 +457,34 @@ int resolve_target(const ping_config *cfg, struct sockaddr_storage *out,
     };
     struct addrinfo *res = NULL;
     int g = getaddrinfo(host, NULL, &hints, &res);
+
+    /* If getaddrinfo fails for a bare link-local literal (no %zone),
+     * retry with the active interface appended. */
+    char host_with_zone[512];
+    bool tried_zone_fallback = false;
+    if (g != 0 && !strchr(host, '%')) {
+        struct in6_addr tmp;
+        if (inet_pton(AF_INET6, host, &tmp) == 1 &&
+            (IN6_IS_ADDR_LINKLOCAL(&tmp) || IN6_IS_ADDR_MC_LINKLOCAL(&tmp))) {
+            char iface[IF_NAMESIZE];
+            if (get_active_interface(iface, sizeof iface)) {
+                unsigned idx = if_nametoindex(iface);
+                if (idx != 0) {
+                    snprintf(host_with_zone, sizeof host_with_zone, "%s%%%s", host, iface);
+                    hints.ai_family = AF_INET6;
+                    g = getaddrinfo(host_with_zone, NULL, &hints, &res);
+                    if (g == 0) {
+                        fprintf(stderr,
+                                "note: no interface specified for link-local %s; "
+                                "using active interface %s\n",
+                                host, iface);
+                        tried_zone_fallback = true;
+                    }
+                }
+            }
+        }
+    }
+
     if (g != 0) {
         fprintf(stderr, "getaddrinfo(%s): %s\n", host, gai_strerror(g));
         return -1;
@@ -425,6 +496,35 @@ int resolve_target(const ping_config *cfg, struct sockaddr_storage *out,
 
     memcpy(out, res->ai_addr, res->ai_addrlen);
     *out_len = res->ai_addrlen;
+
+    /* For IPv6 link-local addresses the kernel requires a scope id.
+     * If the user omitted %iface (e.g. fe80::1) getaddrinfo returns
+     * scope 0 and sendto later fails with EINVAL. Auto-select the
+     * active interface so bare fe80::... just works. */
+    if (!tried_zone_fallback && out->ss_family == AF_INET6 && !strchr(host, '%')) {
+        struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)out;
+        if ((IN6_IS_ADDR_LINKLOCAL(&sin6->sin6_addr) ||
+             IN6_IS_ADDR_MC_LINKLOCAL(&sin6->sin6_addr)) &&
+            sin6->sin6_scope_id == 0) {
+            char iface[IF_NAMESIZE];
+            if (get_active_interface(iface, sizeof iface)) {
+                unsigned idx = if_nametoindex(iface);
+                if (idx != 0) {
+                    sin6->sin6_scope_id = idx;
+                    fprintf(stderr,
+                            "note: no interface specified for link-local %s; "
+                            "using active interface %s (index %u)\n",
+                            host, iface, idx);
+                }
+            } else {
+                fprintf(stderr,
+                        "warning: link-local address %s requires %%interface "
+                        "(e.g. %%enp3s0), and no active interface could be determined\n",
+                        host);
+            }
+        }
+    }
+
     freeaddrinfo(res);
     return 0;
 }
