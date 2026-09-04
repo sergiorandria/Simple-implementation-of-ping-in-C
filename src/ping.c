@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
@@ -238,7 +239,8 @@ int scan_address(int family, const struct sockaddr_storage *dst,
         }
 
         /* Collect replies until every probe is answered or the window
-         * (per-probe timeout) elapses. */
+         * (per-probe timeout) elapses. Absolute deadline with poll
+         * ensures unrelated ICMP noise cannot extend the wait. */
         struct timespec deadline;
         clock_gettime(CLOCK_MONOTONIC, &deadline);
         deadline.tv_sec += cfg->timeout_s;
@@ -246,12 +248,30 @@ int scan_address(int family, const struct sockaddr_storage *dst,
         while (replies < sent) {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
-            if (now.tv_sec > deadline.tv_sec ||
-                (now.tv_sec == deadline.tv_sec &&
-                 now.tv_nsec > deadline.tv_nsec)) {
+            long remaining_ms = (long)(deadline.tv_sec - now.tv_sec) * 1000L +
+                                (long)(deadline.tv_nsec - now.tv_nsec) / 1000000L;
+            if (remaining_ms <= 0) {
                 printf("Timeout – waiting for %d remaining replies\n",
                        sent - replies);
                 break;
+            }
+
+            struct pollfd pfd = { .fd = fd, .events = POLLIN };
+            int pr = poll(&pfd, 1, (int)remaining_ms);
+            if (pr == 0) {
+                printf("Timeout – waiting for %d remaining replies\n",
+                       sent - replies);
+                break;
+            }
+            if (pr < 0) {
+                if (errno == EINTR) continue;
+                fprintf(stderr, "poll: %s\n", strerror(errno));
+                free(answered);
+                free(sent_ts);
+                free(rx);
+                free(tx);
+                close(fd);
+                return EXIT_FAILURE;
             }
 
             struct sockaddr_storage src;
@@ -259,10 +279,8 @@ int scan_address(int family, const struct sockaddr_storage *dst,
             ssize_t r = recvfrom(fd, rx, ctx.rx_cap, 0,
                                  (struct sockaddr *)&src, &sl);
             if (r < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    printf("Timeout – no response\n");
-                    break;
-                }
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+                    continue;
                 fprintf(stderr, "recvfrom: %s\n", strerror(errno));
                 free(answered);
                 free(sent_ts);
@@ -305,16 +323,41 @@ int scan_address(int family, const struct sockaddr_storage *dst,
             }
             sent++;
 
+            struct timespec deadline = ts;
+            deadline.tv_sec += cfg->timeout_s;
+
             while (1) {
+                struct timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                long remaining_ms = (long)(deadline.tv_sec - now.tv_sec) * 1000L +
+                                    (long)(deadline.tv_nsec - now.tv_nsec) / 1000000L;
+                if (remaining_ms <= 0) {
+                    printf("Timeout – no response\n");
+                    break;
+                }
+
+                struct pollfd pfd = { .fd = fd, .events = POLLIN };
+                int pr = poll(&pfd, 1, (int)remaining_ms);
+                if (pr == 0) {
+                    printf("Timeout – no response\n");
+                    break;
+                }
+                if (pr < 0) {
+                    if (errno == EINTR) continue;
+                    fprintf(stderr, "poll: %s\n", strerror(errno));
+                    free(rx);
+                    free(tx);
+                    close(fd);
+                    return EXIT_FAILURE;
+                }
+
                 struct sockaddr_storage src;
                 socklen_t sl = sizeof src;
                 ssize_t r = recvfrom(fd, rx, ctx.rx_cap, 0,
                                      (struct sockaddr *)&src, &sl);
                 if (r < 0) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        printf("Timeout – no response\n");
-                        break;
-                    }
+                    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+                        continue;
                     fprintf(stderr, "recvfrom: %s\n", strerror(errno));
                     free(rx);
                     free(tx);
